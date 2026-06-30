@@ -119,6 +119,12 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--mono);font-si
 .filter-btn.f-serious.active{border-color:var(--amber2);background:var(--amber3);color:var(--amber);}
 .filter-btn.f-moderate.active{border-color:var(--blue2);background:var(--blue3);color:var(--blue);}
 .issue-list{display:flex;flex-direction:column;gap:8px;}
+.page-group{margin-bottom:4px;}
+.page-group + .page-group{margin-top:18px;padding-top:14px;border-top:0.5px solid var(--border);}
+.page-group-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:6px;}
+.page-group-path{font-size:13px;font-weight:600;color:#e8edea;font-family:var(--mono);}
+.page-group-counts{display:flex;gap:10px;font-size:10px;font-family:var(--sans);}
+.page-group-cards{display:flex;flex-direction:column;gap:8px;}
 .issue-card{background:var(--bg2);border:0.5px solid var(--border);border-left-width:2px;border-radius:0 5px 5px 0;overflow:hidden;cursor:pointer;transition:border-color 0.12s;}
 .issue-card:hover{border-color:var(--border2);}
 .issue-card.critical{border-left-color:var(--red);}
@@ -128,6 +134,7 @@ html,body{background:var(--bg);color:var(--text);font-family:var(--mono);font-si
 .issue-header{display:flex;align-items:center;gap:10px;padding:11px 14px;}
 .issue-criterion{font-size:10px;font-weight:600;color:var(--text3);min-width:38px;}
 .issue-title{font-size:12px;font-weight:500;color:#e0e5e2;flex:1;}
+.issue-page-tag{font-size:9px;color:var(--text3);font-weight:400;margin-left:6px;font-family:var(--mono);}
 .issue-impact{font-size:10px;padding:2px 8px;border-radius:3px;font-weight:500;letter-spacing:0.05em;text-transform:uppercase;white-space:nowrap;}
 .impact-critical{background:var(--red3);color:var(--red);border:0.5px solid var(--red2);}
 .impact-serious{background:var(--amber3);color:var(--amber);border:0.5px solid var(--amber2);}
@@ -189,6 +196,10 @@ footer a:hover{text-decoration:underline;}
         Standard:
         <select id="wcag-level"><option value="AA">WCAG 2.1 AA</option><option value="AAA">WCAG 2.1 AAA</option><option value="A">WCAG 2.1 A</option></select>
       </div>
+    </div>
+    <div class="input-section" style="margin-top:14px;margin-bottom:0;">
+      <div class="input-label">Additional pages (optional, one URL or path per line, up to 4)</div>
+      <textarea id="additional-urls" class="url-input" rows="2" placeholder="/about&#10;/projects&#10;https://tanmaysingh.au/contact" spellcheck="false" style="width:100%;resize:vertical;font-family:var(--mono);"></textarea>
     </div>
   </div>
   <div class="preview-card" id="preview-card">
@@ -282,34 +293,72 @@ function renderIssues() {
     list.innerHTML = '<div class="empty-state"><div class="empty-msg">No ' + currentFilter + ' violations found</div></div>';
     return;
   }
-  list.innerHTML = filtered.map((issue) => {
-    const idx = allIssues.indexOf(issue);
-    const y = typeof issue.yPosition === 'number' ? issue.yPosition : (idx / allIssues.length) * 90 + 5;
-    const x = 12 + (idx % 4) * 24 + (Math.floor(idx / 4) % 2) * 8;
-    const cropY = Math.min(95, Math.max(5, y));
-    const cropX = Math.min(92, Math.max(8, x));
-    const cropHtml = screenshotLoaded ? `
-      <div class="issue-crop">
-        <img class="issue-crop-img" src="${currentScreenshotUrl}" style="left:${50 - cropX*5}%;top:${50 - cropY*5}%;" alt="">
-        <div class="issue-crop-dot" style="background:var(--${issue.impact==='critical'?'red':issue.impact==='serious'?'amber':issue.impact==='moderate'?'blue':'text3'})"></div>
+
+  const groups = [];
+  const groupIndex = {};
+  filtered.forEach(issue => {
+    const key = issue.pageUrl || lastAuditedUrl || 'unknown';
+    if (!(key in groupIndex)) {
+      groupIndex[key] = groups.length;
+      groups.push({ pageUrl: key, issues: [] });
+    }
+    groups[groupIndex[key]].issues.push(issue);
+  });
+
+  const multiPage = groups.length > 1;
+
+  list.innerHTML = groups.map(group => {
+    let pagePath;
+    try { pagePath = new URL(group.pageUrl).pathname || '/'; } catch { pagePath = group.pageUrl; }
+    const c = group.issues.filter(i=>i.impact==='critical').length;
+    const s = group.issues.filter(i=>i.impact==='serious').length;
+    const m = group.issues.filter(i=>i.impact==='moderate').length;
+    const mi = group.issues.filter(i=>i.impact==='minor').length;
+
+    const pageHeader = multiPage ? `
+      <div class="page-group-header">
+        <span class="page-group-path">${pagePath}</span>
+        <span class="page-group-counts">
+          ${c ? `<span style="color:var(--red)">${c} critical</span>` : ''}
+          ${s ? `<span style="color:var(--amber)">${s} serious</span>` : ''}
+          ${m ? `<span style="color:var(--blue)">${m} moderate</span>` : ''}
+          ${mi ? `<span style="color:var(--text3)">${mi} minor</span>` : ''}
+        </span>
       </div>
-    ` : `<div class="issue-crop"></div>`;
-    return `
-    <div class="issue-card ${issue.impact}" id="issue-card-${idx}" onclick="toggleIssue(${idx})">
-      <div class="issue-header">
-        ${cropHtml}
-        <span class="issue-criterion">${issue.criterion}</span>
-        <span class="issue-title">${idx+1}. ${issue.title}</span>
-        <span class="issue-impact impact-${issue.impact}">${issue.impact}</span>
+    ` : '';
+
+    const cardsHtml = group.issues.map((issue) => {
+      const idx = allIssues.indexOf(issue);
+      const y = typeof issue.yPosition === 'number' ? issue.yPosition : (idx / allIssues.length) * 90 + 5;
+      const x = 12 + (idx % 4) * 24 + (Math.floor(idx / 4) % 2) * 8;
+      const cropY = Math.min(95, Math.max(5, y));
+      const cropX = Math.min(92, Math.max(8, x));
+      const isHomepage = !issue.pageUrl || issue.pageUrl === lastAuditedUrl;
+      const cropHtml = (screenshotLoaded && isHomepage) ? `
+        <div class="issue-crop">
+          <img class="issue-crop-img" src="${currentScreenshotUrl}" style="left:${50 - cropX*5}%;top:${50 - cropY*5}%;" alt="">
+          <div class="issue-crop-dot" style="background:var(--${issue.impact==='critical'?'red':issue.impact==='serious'?'amber':issue.impact==='moderate'?'blue':'text3'})"></div>
+        </div>
+      ` : `<div class="issue-crop" style="display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--text3);text-align:center;padding:4px;">${isHomepage ? '' : 'other page'}</div>`;
+      return `
+      <div class="issue-card ${issue.impact}" id="issue-card-${idx}" onclick="toggleIssue(${idx})">
+        <div class="issue-header">
+          ${cropHtml}
+          <span class="issue-criterion">${issue.criterion}</span>
+          <span class="issue-title">${idx+1}. ${issue.title}</span>
+          <span class="issue-impact impact-${issue.impact}">${issue.impact}</span>
+        </div>
+        <div class="issue-body" id="ib-${idx}">
+          <div class="issue-desc">${issue.description}</div>
+          <div class="issue-fix-label">Suggested fix</div>
+          <div class="issue-fix">${issue.fix}</div>
+          ${issue.selector ? `<div class="issue-sel">Selector: <code>${issue.selector}</code></div>` : ''}
+        </div>
       </div>
-      <div class="issue-body" id="ib-${idx}">
-        <div class="issue-desc">${issue.description}</div>
-        <div class="issue-fix-label">Suggested fix</div>
-        <div class="issue-fix">${issue.fix}</div>
-        ${issue.selector ? `<div class="issue-sel">Selector: <code>${issue.selector}</code></div>` : ''}
-      </div>
-    </div>
-  `;
+    `;
+    }).join('');
+
+    return `<div class="page-group">${pageHeader}<div class="page-group-cards">${cardsHtml}</div></div>`;
   }).join('');
 }
 function toggleIssue(idx) {
@@ -368,37 +417,48 @@ async function runAudit() {
   ['badge-issues','stat-critical','stat-serious','stat-moderate','stat-total'].forEach(id => document.getElementById(id).textContent = '0');
   document.getElementById('badge-summary').textContent = '';
   const level = document.getElementById('wcag-level').value;
+  const additionalUrlsRaw = document.getElementById('additional-urls').value
+    .split('\n').map(s => s.trim()).filter(Boolean).slice(0, 4);
+  const totalPages = 1 + additionalUrlsRaw.length;
   showPreviewLoading(url);
   loadScreenshot(url);
-  log(`<span class="t-prompt">$</span> <span class="t-text">accesswatch run --target ${url} --standard WCAG${level}</span>`);
+  log(`<span class="t-prompt">$</span> <span class="t-text">accesswatch run --target ${url} --standard WCAG${level} --pages ${totalPages}</span>`);
   log(`<span class="t-dim">───────────────────────────────────────────</span>`);
   await sleep(250);
   log(`<span class="t-info">[planner]</span> <span class="t-text">Target: ${url}</span>`);
   await sleep(250);
-  log(`<span class="t-info">[planner]</span> <span class="t-text">Standard: WCAG 2.1 ${level}</span>`);
+  log(`<span class="t-info">[planner]</span> <span class="t-text">Standard: WCAG 2.1 ${level} · Pages to audit: ${totalPages}</span>`);
   await sleep(400);
   log(`<span class="t-teal">[crawler]</span> <span class="t-text">browser-mcp.navigate("${url}")</span>`);
+  if (additionalUrlsRaw.length) {
+    await sleep(300);
+    additionalUrlsRaw.forEach(u => log(`<span class="t-teal">[crawler]</span> <span class="t-text">browser-mcp.navigate("${u}")</span>`));
+  }
   await sleep(400);
   log(`<span class="t-warn">[audit]</span>  <span class="t-text">POST ${BACKEND_URL}</span>`);
-  log(`<span class="t-warn">[audit]</span>  <span class="t-text">Calling claude-sonnet-4-6... <span class="cursor-blink"></span></span>`);
+  log(`<span class="t-warn">[audit]</span>  <span class="t-text">Calling claude-sonnet-4-6 across ${totalPages} page${totalPages>1?'s':''} in parallel... <span class="cursor-blink"></span></span>`);
   try {
-    const issues = await callBackend(url, level);
+    const { issues, pagesAudited, pageErrors } = await callBackend(url, level, additionalUrlsRaw);
     const cursor = document.getElementById('term-body').querySelector('.cursor-blink');
     if (cursor) cursor.parentElement.remove();
-    log(`<span class="t-ok">[audit]</span>  <span class="t-text">Live AI analysis complete</span>`);
+    log(`<span class="t-ok">[audit]</span>  <span class="t-text">Live AI analysis complete — ${pagesAudited.length} page(s) audited</span>`);
+    if (pageErrors && pageErrors.length) {
+      pageErrors.forEach(pe => log(`<span class="t-warn">[audit]</span>  <span class="t-text">Skipped ${pe.url} — ${pe.error}</span>`));
+    }
     log(`<span class="t-dim">───────────────────────────────────────────</span>`);
     const critical = issues.filter(i=>i.impact==='critical').length;
     const serious = issues.filter(i=>i.impact==='serious').length;
     const moderate = issues.filter(i=>i.impact==='moderate').length;
     const minor = issues.filter(i=>i.impact==='minor').length;
     for (const issue of issues) {
-      await sleep(100);
+      await sleep(80);
       const cls = issue.impact==='critical'?'t-err':issue.impact==='serious'?'t-warn':'t-info';
-      log(`<span class="${cls}">[audit]</span>  <span class="t-text">${issue.impact.toUpperCase().padEnd(10)} ${issue.criterion}  ${issue.title}</span>`);
+      const pageTag = issue.pageUrl ? ` [${new URL(issue.pageUrl).pathname || '/'}]` : '';
+      log(`<span class="${cls}">[audit]</span>  <span class="t-text">${issue.impact.toUpperCase().padEnd(10)} ${issue.criterion}  ${issue.title}${pageTag}</span>`);
     }
     await sleep(300);
     log(`<span class="t-dim">───────────────────────────────────────────</span>`);
-    log(`<span class="t-ok">[done]</span>    <span class="t-text">${issues.length} violations · ${critical} critical · ${serious} serious · ${moderate} moderate · ${minor} minor</span>`);
+    log(`<span class="t-ok">[done]</span>    <span class="t-text">${issues.length} violations across ${pagesAudited.length} page(s) · ${critical} critical · ${serious} serious · ${moderate} moderate · ${minor} minor</span>`);
     document.getElementById('term-title').textContent = `accesswatch — ${issues.length} violations found`;
     allIssues = issues;
     lastAuditedUrl = url;
@@ -409,7 +469,7 @@ async function runAudit() {
     document.getElementById('badge-issues').textContent = issues.length;
     document.getElementById('badge-summary').textContent = '✓';
     renderIssues();
-    renderSummary(url, issues, level);
+    renderSummary(url, issues, level, pagesAudited);
   } catch(e) {
     const cursor = document.getElementById('term-body').querySelector('.cursor-blink');
     if (cursor) cursor.parentElement.remove();
@@ -420,11 +480,11 @@ async function runAudit() {
   logCursor();
   btn.classList.remove('running'); btn.disabled = false;
 }
-async function callBackend(url, level) {
+async function callBackend(url, level, additionalUrls) {
   const res = await fetch(BACKEND_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url, level })
+    body: JSON.stringify({ url, level, additionalUrls })
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -433,7 +493,7 @@ async function callBackend(url, level) {
   if (!data.issues) {
     throw new Error('Backend response missing issues array');
   }
-  return data.issues;
+  return { issues: data.issues, pagesAudited: data.pagesAudited || [url], pageErrors: data.pageErrors || [] };
 }
 function showPreviewLoading(url) {
   const card = document.getElementById('preview-card');
@@ -532,20 +592,38 @@ function buildCategoryChart(buckets, bColors) {
   `;
 }
 
-function renderSummary(url, issues, level) {
+function renderSummary(url, issues, level, pagesAudited) {
   const critical=issues.filter(i=>i.impact==='critical').length;
   const serious=issues.filter(i=>i.impact==='serious').length;
   const moderate=issues.filter(i=>i.impact==='moderate').length;
-  const score=Math.max(0,Math.round(100-(critical*15)-(serious*8)-(moderate*4)));
+  const pageCount = Math.max(1, (pagesAudited || [url]).length);
+  const weightedPenalty = (critical*15 + serious*8 + moderate*4) / pageCount;
+  const score=Math.max(0,Math.min(100,Math.round(100-weightedPenalty)));
   const sc=score>=80?'green':score>=60?'amber':'red';
   const buckets={'Perceivable':0,'Operable':0,'Understandable':0,'Robust':0};
   const map={'1':'Perceivable','2':'Operable','3':'Understandable','4':'Robust'};
   issues.forEach(i=>{ const g=map[(i.criterion||'').split('.')[0]]; if(g) buckets[g]++; });
   const bColors={'Perceivable':'#e05c5c','Operable':'#f5a623','Understandable':'#5b9cf6','Robust':'#2dd4bf'};
+  const pages = pagesAudited || [url];
 
   updatePreviewResult(url, score, sc, issues.length);
 
   document.getElementById('summary-content').innerHTML = `
+    ${pages.length > 1 ? `
+    <div class="summary-section">
+      <div class="summary-title">Pages crawled</div>
+      <div style="display:flex;flex-direction:column;gap:4px">
+        ${pages.map(p => {
+          const count = issues.filter(i => i.pageUrl === p).length;
+          let path;
+          try { path = new URL(p).pathname || '/'; } catch { path = p; }
+          return `<div style="display:flex;justify-content:space-between;font-size:11px;font-family:var(--sans);color:var(--text2);padding:4px 0;">
+            <span style="color:var(--text)">${path}</span>
+            <span style="color:var(--text3)">${count} violation${count!==1?'s':''}</span>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>` : ''}
     <div class="summary-section">
       <div class="summary-title">Audit overview</div>
       <div class="gauge-wrap">
@@ -554,7 +632,7 @@ function renderSummary(url, issues, level) {
           <div class="gauge-legend-item"><span class="gauge-legend-dot" style="background:var(--red)"></span>${critical} critical</div>
           <div class="gauge-legend-item"><span class="gauge-legend-dot" style="background:var(--amber)"></span>${serious} serious</div>
           <div class="gauge-legend-item"><span class="gauge-legend-dot" style="background:var(--blue)"></span>${moderate} moderate</div>
-          <div class="gauge-legend-item">WCAG 2.1 ${level} · ${issues.length} total</div>
+          <div class="gauge-legend-item">WCAG 2.1 ${level} · ${issues.length} total · ${pages.length} page${pages.length!==1?'s':''}</div>
         </div>
       </div>
     </div>

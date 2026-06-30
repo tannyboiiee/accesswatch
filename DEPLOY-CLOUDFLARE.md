@@ -9,17 +9,24 @@ key — it lives only on Cloudflare's servers as an environment variable.
 shareable/viewable deployment link, which doesn't work well alongside your
 other portfolio projects. Cloudflare Pages doesn't have that restriction.
 
-**What changed in this migration, beyond the platform:**
-`api/audit.js` previously asked Claude to invent "8 realistic accessibility
-violations" for a URL without ever looking at the actual page. It's been
-rewritten to fetch the real page server-side and extract real, concrete
-facts (missing `alt` text, unlabeled form inputs, heading order, missing
-`lang` attribute, vague link text) using Cloudflare's built-in HTMLRewriter
-— then Claude is asked to turn those *real* facts into WCAG findings, not
-invent plausible-sounding ones. This still can't catch things that need an
-actually-rendered page (color contrast, focus order) — that's a separate,
-bigger upgrade (Cloudflare Browser Rendering) noted as a future option, not
-built here.
+**Important: this package now ports the REAL, working version** —
+`github.com/tannyboiiee/my-portfolio`, branch `multi-page-crawl` — the one
+Vercel was actually deployed from, confirmed by checking the Vercel
+project's Git settings directly. An earlier pass had migrated an older/
+incomplete copy of this backend that never had the multi-page crawl
+feature; that version has been discarded in favor of this faithful port of
+the real one. Nothing about the audit logic itself was changed beyond the
+platform-required handler signature (Vercel's `(req,res)` → Cloudflare's
+`(request,env)`).
+
+**What the real version actually does, for reference:** it fetches each
+submitted page's real HTML server-side (truncated to 8,000 characters) and
+gives that to Claude as grounding context — falling back to URL-only
+analysis only if the fetch genuinely fails. It accepts up to 4
+`additionalUrls` for true multi-page crawling (normalized, deduplicated,
+restricted to the same hostname as the base URL), audits all pages in
+parallel, and isolates per-page failures so one broken page doesn't take
+down the whole batch.
 
 ## Steps (10–15 minutes, no coding required)
 
@@ -59,14 +66,13 @@ built here.
    `https://accesswatch.pages.dev` (or `https://accesswatch-xxx.pages.dev`
    for a specific deployment, same pattern as Ballot Brief)
 
-6. **No code change needed in the Framer widget** — checked the actual
-   frontend code already pushed here (`public/index.html`): both API calls
-   use relative paths (`/api/audit`, `/api/file-issues`), not a hardcoded
-   Vercel URL. As long as the widget embedded in Framer is pointed at this
-   same Cloudflare Pages domain, it'll resolve correctly with zero changes.
-   If your Framer code component currently has the old Vercel URL
-   hardcoded anywhere, that's the one place to update — swap it for your
-   new `accesswatch.pages.dev` domain.
+6. **No code change needed in the Framer widget** — both API calls in
+   `public/index.html` use relative paths (`/api/audit`, `/api/file-issues`),
+   not a hardcoded Vercel URL. As long as the widget embedded in Framer is
+   pointed at this same Cloudflare Pages domain, it'll resolve correctly
+   with zero changes. If your Framer code component currently has the old
+   Vercel URL hardcoded anywhere, that's the one place to update — swap it
+   for your new `accesswatch.pages.dev` domain.
 
 ## Cost
 
@@ -82,17 +88,15 @@ component or any client-side code — that exposes it to anyone who views
 page source. The whole point of this backend is to keep the key
 server-side only.
 
-## What's NOT done here (documented, not silently skipped)
+## Known, disclosed limitation (inherited from the real version, not new)
 
-- **Real rendered-page analysis** (computed color contrast, real focus
-  order, visual overlap) — would need Cloudflare's Browser Rendering
-  product (a real headless-browser API, Puppeteer-compatible, runs inside
-  Workers). It's a meaningfully bigger build — browser session management,
-  ideally Durable Objects to reuse sessions instead of a cold-start cost
-  every request — and has its own cost/quota considerations worth checking
-  on Cloudflare's current pricing page before committing to it. Flagged as
-  a deliberate next step, not built in this pass.
-- **Sites that block automated fetches or require JavaScript to render**
-  will fail the audit with a clear error message rather than silently
-  falling back to inventing findings — this is intentional; an honest
-  failure is better than a fabricated result.
+Because each page's HTML is truncated to 8,000 characters before being
+sent to Claude, very long pages will only be analyzed based on their first
+8,000 characters of markup — content further down the page (or content
+injected later by client-side JavaScript) won't be seen. This is the same
+limitation the real, working Vercel version already had; this port doesn't
+change that behavior. If you ever want to lift it, the options are
+sending more of the page (more tokens, more cost per audit) or moving to
+a structured-extraction approach that doesn't depend on truncation —
+worth a separate conversation if it becomes a real problem in practice.
+

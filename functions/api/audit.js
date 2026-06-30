@@ -1,25 +1,109 @@
 // POST /api/audit
-// Cloudflare Pages Function — migrated from Vercel's api/audit.js.
+// Cloudflare Pages Function — faithful port of the REAL, working
+// multi-page-crawl branch (github.com/tannyboiiee/my-portfolio, branch
+// "multi-page-crawl") that was actually deployed and working on Vercel.
 //
-// REAL FIX (Tier 1, per conversation): the original version asked Claude to
-// invent "8 realistic accessibility violations" for a URL without ever
-// looking at the page. This version actually fetches the page server-side
-// and uses Cloudflare's native HTMLRewriter (a streaming HTML parser built
-// into the Workers runtime — no extra dependency) to pull out real,
-// concrete accessibility-relevant facts: missing alt text, unlabeled form
-// inputs, heading order, missing lang attribute, empty/ambiguous link text.
-// Claude is then asked to turn THOSE real facts into WCAG findings, not to
-// invent plausible-sounding ones from the URL string alone.
+// This is NOT the earlier from-scratch rewrite — that was built against an
+// older/incomplete version of the backend that never had the crawl feature.
+// This port preserves the real, proven logic exactly:
+//   - fetches each page's real HTML server-side (truncated to 8000 chars),
+//     falling back to URL-only analysis ONLY if the fetch genuinely fails
+//   - accepts up to 4 additionalUrls for true multi-page crawling,
+//     normalized/deduped/restricted to the same hostname as the base url
+//   - audits all pages in parallel, isolates per-page failures so one
+//     broken page doesn't kill the whole batch
+//   - scales issues-per-page down as page count goes up, so a 5-page crawl
+//     doesn't return 40 issues
 //
-// Known, disclosed limitation: this still can't assess things that require
-// an actually-rendered page — computed color-contrast ratios, real focus
-// order, visual overlap. Catching those needs a headless-browser product
-// (Cloudflare has one — Browser Rendering / Puppeteer-on-Workers — but it's
-// a meaningfully bigger build with its own cost/complexity tradeoffs;
-// deliberately out of scope for this pass, see project notes / README).
+// Only the platform-required parts changed: Vercel's (req,res) handler →
+// Cloudflare's (request,env) Web-standard signature, process.env → env,
+// res.status().json() → new Response(JSON.stringify(...), {status}).
 
-const MAX_ITEMS_PER_CATEGORY = 25; // bounds prompt size on very large pages
-const FETCH_TIMEOUT_MS = 8000;
+async function fetchPageHtml(url) {
+  try {
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; AccessWatchBot/1.0)' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const text = await res.text();
+    return text.substring(0, 8000);
+  } catch {
+    return null;
+  }
+}
+
+async function auditPage(apiKey, pageUrl, level, pageHtml, issueCount) {
+  const siteContext = pageHtml
+    ? `Here is the actual HTML source of the page (first 8000 chars):\n\`\`\`html\n${pageHtml}\n\`\`\``
+    : `The page could not be fetched directly. Analyse based on the URL and common accessibility patterns for this type of page.`;
+
+  const prompt = `You are AccessWatch, an expert WCAG accessibility auditor. Analyse ${pageUrl} for WCAG 2.1 ${level || 'AA'} violations.
+
+${siteContext}
+
+Return a JSON array of exactly ${issueCount} realistic accessibility violations for this specific page. Each item must have:
+- criterion: WCAG code (e.g. "1.4.3")
+- title: max 6 words
+- impact: "critical", "serious", "moderate", or "minor"
+- description: 1 short sentence
+- fix: 1 short sentence, concise actionable fix
+- selector: affected CSS selector or element
+- region: one of "header", "nav", "hero", "content", "sidebar", "footer"
+- yPosition: integer 0-100, approximate vertical position on the page
+
+Keep every field brief. Distribute yPosition realistically (header/nav low like 2-15, hero 15-30, content 30-70, footer 85-98). Respond with ONLY the raw JSON array. No markdown fences, no preamble, no explanation.`;
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1536,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || `Anthropic API error ${response.status}`);
+  }
+
+  const data = await response.json();
+  const text = data.content?.[0]?.text || '';
+  const clean = text.replace(/```json|```/g, '').trim();
+  const issues = JSON.parse(clean);
+
+  return issues.map((issue) => ({ ...issue, pageUrl }));
+}
+
+function normalizeUrls(rawUrls, baseUrl) {
+  const base = new URL(baseUrl);
+  const seen = new Set();
+  const result = [];
+  for (const raw of rawUrls) {
+    if (!raw || typeof raw !== 'string') continue;
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    try {
+      const resolved = new URL(trimmed, base);
+      if (resolved.hostname !== base.hostname) continue;
+      resolved.hash = '';
+      const normalized = resolved.toString().replace(/\/$/, '');
+      if (!seen.has(normalized)) {
+        seen.add(normalized);
+        result.push(normalized);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return result;
+}
 
 function corsHeaders() {
   return {
@@ -49,216 +133,49 @@ export async function onRequestPost({ request, env }) {
     return new Response(JSON.stringify({ error: { message: 'Invalid JSON body' } }), { status: 400, headers });
   }
 
-  const { url, level } = body || {};
+  const { url, level, additionalUrls } = body || {};
   if (!url) {
     return new Response(JSON.stringify({ error: { message: 'Missing url in request body' } }), { status: 400, headers });
   }
 
-  // ---- 1. Fetch the real page, server-side ----
-  let pageResponse;
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-    pageResponse = await fetch(url, {
-      signal: controller.signal,
-      headers: { 'User-Agent': 'AccessWatchBot/1.0 (+accessibility audit)' },
-    });
-    clearTimeout(timeout);
-  } catch (e) {
-    return new Response(
-      JSON.stringify({ error: { message: `Could not fetch ${url}: ${e.message}. The page may block automated requests, require JavaScript to render, or be unreachable.` } }),
-      { status: 502, headers }
-    );
+  let extraPages = [];
+  if (Array.isArray(additionalUrls) && additionalUrls.length) {
+    extraPages = normalizeUrls(additionalUrls, url).slice(0, 4);
   }
 
-  if (!pageResponse.ok) {
-    return new Response(
-      JSON.stringify({ error: { message: `Fetching ${url} returned HTTP ${pageResponse.status}` } }),
-      { status: 502, headers }
-    );
-  }
-
-  // ---- 2. Extract real, concrete accessibility facts via HTMLRewriter ----
-  const facts = {
-    htmlLang: null,
-    title: null,
-    headings: [], // { level, text }
-    imagesMissingAlt: [], // { src }
-    imagesTotal: 0,
-    inputsMissingLabel: [], // { type, name }
-    inputsTotal: 0,
-    emptyOrVagueLinks: [], // { href, text }
-    linksTotal: 0,
-  };
-
-  let currentHeadingLevel = null;
-  let currentHeadingText = '';
-  let currentLinkHref = null;
-  let currentLinkText = '';
-
-  const rewriter = new HTMLRewriter()
-    .on('html', {
-      element(el) {
-        facts.htmlLang = el.getAttribute('lang');
-      },
-    })
-    .on('title', {
-      text(t) {
-        facts.title = (facts.title || '') + t.text;
-      },
-    })
-    .on('h1, h2, h3, h4, h5, h6', {
-      element(el) {
-        currentHeadingLevel = el.tagName;
-        currentHeadingText = '';
-      },
-      text(t) {
-        currentHeadingText += t.text;
-        if (t.lastInTextNode && currentHeadingLevel) {
-          const text = currentHeadingText.trim();
-          if (text) facts.headings.push({ level: currentHeadingLevel, text: text.slice(0, 80) });
-          currentHeadingLevel = null;
-        }
-      },
-    })
-    .on('img', {
-      element(el) {
-        facts.imagesTotal++;
-        const alt = el.getAttribute('alt');
-        if (alt === null && facts.imagesMissingAlt.length < MAX_ITEMS_PER_CATEGORY) {
-          facts.imagesMissingAlt.push({ src: (el.getAttribute('src') || '').slice(0, 120) });
-        }
-      },
-    })
-    .on('input, select, textarea', {
-      element(el) {
-        facts.inputsTotal++;
-        const id = el.getAttribute('id');
-        const ariaLabel = el.getAttribute('aria-label');
-        const ariaLabelledby = el.getAttribute('aria-labelledby');
-        const type = el.getAttribute('type') || el.tagName;
-        // Note: we can't check for a matching <label for="id"> with
-        // HTMLRewriter's streaming model without a second pass — flagged
-        // here as "no aria-label and no id to associate a label with",
-        // which is a real, if conservative, signal (an input with neither
-        // can never be labeled at all).
-        if (!ariaLabel && !ariaLabelledby && !id && facts.inputsMissingLabel.length < MAX_ITEMS_PER_CATEGORY) {
-          facts.inputsMissingLabel.push({ type, name: el.getAttribute('name') || '(unnamed)' });
-        }
-      },
-    })
-    .on('a', {
-      element(el) {
-        facts.linksTotal++;
-        currentLinkHref = el.getAttribute('href');
-        currentLinkText = '';
-        const ariaLabel = el.getAttribute('aria-label');
-        if (ariaLabel) currentLinkText = ariaLabel; // pre-fill; element() runs before child text()
-      },
-      text(t) {
-        currentLinkText += t.text;
-        if (t.lastInTextNode) {
-          const text = currentLinkText.trim().toLowerCase();
-          const vague = ['', 'click here', 'here', 'read more', 'more', 'link'];
-          if (vague.includes(text) && facts.emptyOrVagueLinks.length < MAX_ITEMS_PER_CATEGORY) {
-            facts.emptyOrVagueLinks.push({ href: (currentLinkHref || '').slice(0, 120), text: currentLinkText.trim().slice(0, 40) || '(empty)' });
-          }
-        }
-      },
-    });
+  const totalPages = 1 + extraPages.length;
+  const issuesPerPage = totalPages === 1 ? 8 : Math.max(3, Math.round(8 / totalPages) + 2);
 
   try {
-    const transformed = rewriter.transform(pageResponse);
-    await transformed.text(); // drain the stream — handlers only fire as body is read
-  } catch (e) {
-    return new Response(JSON.stringify({ error: { message: `Failed to parse page HTML: ${e.message}` } }), { status: 502, headers });
-  }
+    const allUrls = [url, ...extraPages];
+    const fetched = await Promise.all(allUrls.map(async (u) => ({ url: u, html: await fetchPageHtml(u) })));
 
-  // ---- 3. Check heading order for skipped levels (e.g. h1 -> h3, no h2) ----
-  const headingIssues = [];
-  let prevLevel = 0;
-  for (const h of facts.headings) {
-    const num = parseInt(h.level.slice(1), 10);
-    if (prevLevel > 0 && num > prevLevel + 1) {
-      headingIssues.push(`Heading order skips from <${'h' + prevLevel}> to <${h.level}> ("${h.text}")`);
-    }
-    prevLevel = num;
-  }
-
-  // ---- 4. Build a prompt grounded entirely in real, extracted facts ----
-  const factsSummary = `
-Page title: ${facts.title ? facts.title.trim() : '(missing — no <title> element found)'}
-HTML lang attribute: ${facts.htmlLang || '(missing — no lang attribute on <html>)'}
-
-Images: ${facts.imagesTotal} total, ${facts.imagesMissingAlt.length} missing an alt attribute entirely.
-${facts.imagesMissingAlt.length ? facts.imagesMissingAlt.map((i) => `  - <img src="${i.src}"> has no alt attribute`).join('\n') : ''}
-
-Form inputs: ${facts.inputsTotal} total, ${facts.inputsMissingLabel.length} have no id, aria-label, or aria-labelledby (so they cannot possibly be associated with a label).
-${facts.inputsMissingLabel.length ? facts.inputsMissingLabel.map((i) => `  - <${i.type}> name="${i.name}"`).join('\n') : ''}
-
-Links: ${facts.linksTotal} total, ${facts.emptyOrVagueLinks.length} have empty or non-descriptive text (e.g. "click here", "read more", or no text at all).
-${facts.emptyOrVagueLinks.length ? facts.emptyOrVagueLinks.map((l) => `  - <a href="${l.href}">${l.text}</a>`).join('\n') : ''}
-
-Heading structure (in document order): ${facts.headings.map((h) => h.level).join(' -> ') || '(no headings found)'}
-${headingIssues.length ? headingIssues.map((i) => `  - ${i}`).join('\n') : '  No skipped heading levels detected.'}
-`.trim();
-
-  const hasAnyFindings =
-    facts.imagesMissingAlt.length || facts.inputsMissingLabel.length || facts.emptyOrVagueLinks.length || headingIssues.length || !facts.htmlLang || !facts.title;
-
-  const prompt = `You are AccessWatch, a WCAG 2.1 ${level || 'AA'} accessibility auditor.
-
-Below are REAL, extracted facts about the actual HTML at ${url} — not a guess, not a hypothetical. Turn these into WCAG findings.
-
-${factsSummary}
-
-IMPORTANT — only report violations directly supported by the facts above. Do NOT invent issues about color contrast, focus order, keyboard navigation, or anything else that would require seeing the page rendered — that data was not collected and you have no basis for it. If the facts above show no real issues, return an empty array rather than inventing some. If a finding can be made, return it as a JSON array of objects, each with:
-- criterion: WCAG code (e.g. "1.1.1")
-- title: max 6 words
-- impact: "critical", "serious", "moderate", or "minor"
-- description: 1 short sentence, referencing the specific real element/fact above
-- fix: 1 short sentence, concise actionable fix
-- selector: the actual element from the facts above (e.g. the real src, name, or href shown)
-- region: best guess at "header", "nav", "hero", "content", "sidebar", or "footer" based on the element's likely position (e.g. an <h1> is usually "hero", footer links are usually "footer") — this is the one field where a reasonable guess is fine, since position isn't in the extracted facts
-- yPosition: integer 0-100, your best-guess approximate vertical position based on the region field above
-
-Respond with ONLY the raw JSON array. No markdown fences, no preamble, no explanation before or after.`;
-
-  if (!hasAnyFindings) {
-    // No point spending a model call when there's structurally nothing to report —
-    // return an honest empty result directly.
-    return new Response(
-      JSON.stringify({ issues: [], note: 'No structural accessibility issues detected in the extracted facts. Note: color contrast, focus order, and other rendering-dependent checks are not covered by this audit.' }),
-      { status: 200, headers }
+    const pageResults = await Promise.all(
+      fetched.map((page) => auditPage(apiKey, page.url, level, page.html, issuesPerPage).catch((e) => ({ error: e.message, pageUrl: page.url })))
     );
-  }
 
-  try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 2048,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    });
+    const issues = [];
+    const pagesAudited = [];
+    const pageErrors = [];
 
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      return new Response(JSON.stringify({ error: { message: err.error?.message || `Anthropic API error ${response.status}` } }), { status: response.status, headers });
+    for (let i = 0; i < pageResults.length; i++) {
+      const result = pageResults[i];
+      if (Array.isArray(result)) {
+        issues.push(...result);
+        pagesAudited.push(fetched[i].url);
+      } else {
+        pageErrors.push({ url: fetched[i].url, error: result.error });
+      }
     }
 
-    const data = await response.json();
-    const text = data.content?.[0]?.text || '';
-    const clean = text.replace(/```json|```/g, '').trim();
-    const issues = JSON.parse(clean);
+    if (!issues.length) {
+      return new Response(
+        JSON.stringify({ error: { message: 'Failed to audit any pages: ' + (pageErrors[0]?.error || 'unknown error') } }),
+        { status: 502, headers }
+      );
+    }
 
-    return new Response(JSON.stringify({ issues }), { status: 200, headers });
+    return new Response(JSON.stringify({ issues, pagesAudited, pageErrors }), { status: 200, headers });
   } catch (e) {
     return new Response(JSON.stringify({ error: { message: e.message } }), { status: 502, headers });
   }
