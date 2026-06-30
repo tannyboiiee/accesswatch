@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AccessWatch — AI accessibility auditor</title>
+<meta name="description" content="An AI agent that crawls websites and audits them for WCAG accessibility violations in real time.">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/tabler-icons/2.44.0/tabler-icons-outline.min.css">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500&display=swap');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+:root{
+  --bg:#0d0f0e;--bg2:#131614;--bg3:#181b1a;--bg4:#1e2220;
+  --border:#2a2e2c;--border2:#3a3f3c;
+  --text:#c8cdc9;--text2:#7a8078;--text3:#4a504d;
+  --green:#3ddc84;--green2:#1a5c38;--green3:#0d2e1c;
+  --amber:#f5a623;--amber2:#7a4e0a;--amber3:#2e1d04;
+  --red:#e05c5c;--red2:#6e2020;--red3:#2a0e0e;
+  --blue:#5b9cf6;--blue2:#1a3a6e;--blue3:#0a1a30;
+  --teal:#2dd4bf;
+  --mono:'IBM Plex Mono',monospace;
+  --sans:'IBM Plex Sans',sans-serif;
+}
+html,body{background:var(--bg);color:var(--text);font-family:var(--mono);font-size:13px;line-height:1.6;min-height:100vh;}
+.app{max-width:900px;margin:0 auto;padding:32px 24px 64px;}
+.back-link{display:inline-flex;align-items:center;gap:6px;color:var(--text3);text-decoration:none;font-size:11px;margin-bottom:20px;transition:color 0.15s;}
+.back-link:hover{color:var(--green);}
+.header{display:flex;align-items:center;justify-content:space-between;margin-bottom:28px;padding-bottom:16px;border-bottom:0.5px solid var(--border);flex-wrap:wrap;gap:10px;}
+.logo{font-size:18px;font-weight:600;color:#e8edea;letter-spacing:-0.02em;}
+.logo span{color:var(--green);}
+.logo-sub{font-size:10px;color:var(--text3);letter-spacing:0.1em;text-transform:uppercase;margin-top:2px;}
+.status-pill{display:flex;align-items:center;gap:6px;font-size:11px;padding:4px 10px;border-radius:20px;border:0.5px solid var(--green2);color:var(--green);background:var(--green3);}
+.status-dot{width:6px;height:6px;border-radius:50%;background:currentColor;}
+.status-dot.pulse{animation:pulse 2s ease-in-out infinite;}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.35;}}
+.intro{font-family:var(--sans);font-size:14px;color:var(--text2);line-height:1.75;margin-bottom:24px;max-width:640px;}
+.intro strong{color:var(--text);font-weight:500;}
+
+.preview-card{background:var(--bg2);border:0.5px solid var(--border);border-radius:6px;overflow:hidden;margin-bottom:16px;display:none;}
+.preview-card.show{display:flex;}
+.preview-thumb{width:200px;min-width:200px;height:140px;background:var(--bg3);position:relative;overflow:hidden;border-right:0.5px solid var(--border);}
+.preview-thumb img{width:100%;height:100%;object-fit:cover;object-position:top;display:block;}
+.preview-thumb .thumb-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:11px;flex-direction:column;gap:8px;}
+.preview-thumb .thumb-spinner{width:16px;height:16px;border:1.5px solid var(--border2);border-top-color:var(--green);border-radius:50%;animation:spin 0.8s linear infinite;}
+.marker{position:absolute;width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:600;font-family:var(--mono);color:#0d0f0e;cursor:pointer;transform:translate(-50%,-50%);border:1.5px solid rgba(13,15,14,0.5);box-shadow:0 0 0 2px rgba(13,15,14,0.6);transition:transform 0.15s;z-index:2;}
+.marker:hover{transform:translate(-50%,-50%) scale(1.25);}
+.marker.m-critical{background:var(--red);}
+.marker.m-serious{background:var(--amber);}
+.marker.m-moderate{background:var(--blue);}
+.marker.m-minor{background:var(--text3);}
+.marker-note{font-size:10px;color:var(--text3);font-family:var(--sans);margin-top:6px;display:none;}
+.marker-note.show{display:block;}
+.issue-card.flash{border-color:var(--green2);background:var(--green3);}
+
+.issue-crop{width:64px;height:64px;min-width:64px;border-radius:4px;overflow:hidden;position:relative;background:var(--bg3);border:0.5px solid var(--border2);flex-shrink:0;}
+.issue-crop-img{position:absolute;width:500%;height:500%;object-fit:cover;}
+.issue-crop-dot{position:absolute;width:10px;height:10px;border-radius:50%;top:50%;left:50%;transform:translate(-50%,-50%);border:1.5px solid #0d0f0e;box-shadow:0 0 0 2px rgba(13,15,14,0.6);z-index:2;}
+.issue-header{display:flex;align-items:center;gap:10px;padding:11px 14px;}
+.preview-info{padding:14px 16px;flex:1;display:flex;flex-direction:column;justify-content:center;gap:6px;min-width:0;}
+.preview-url{font-size:12px;color:var(--text);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.preview-meta{font-size:11px;color:var(--text3);font-family:var(--sans);}
+.preview-score-badge{display:inline-flex;align-items:center;gap:6px;font-size:11px;padding:3px 10px;border-radius:20px;width:fit-content;margin-top:4px;}
+
+.gauge-wrap{display:flex;align-items:center;gap:24px;flex-wrap:wrap;}
+.gauge-svg{flex-shrink:0;}
+.gauge-legend{display:flex;flex-direction:column;gap:8px;font-family:var(--sans);font-size:11px;}
+.gauge-legend-item{display:flex;align-items:center;gap:8px;color:var(--text2);}
+.gauge-legend-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+
+.chart-bars{display:flex;align-items:flex-end;gap:14px;height:140px;padding:0 4px;}
+.chart-bar-col{flex:1;display:flex;flex-direction:column;align-items:center;gap:8px;height:100%;justify-content:flex-end;}
+.chart-bar{width:100%;max-width:56px;border-radius:3px 3px 0 0;transition:height 0.6s ease;position:relative;min-height:2px;}
+.chart-bar-val{font-size:13px;font-weight:600;color:#e8edea;}
+.chart-bar-label{font-size:10px;color:var(--text3);text-align:center;line-height:1.3;}
+
+.input-section{margin-bottom:20px;}
+.input-label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:8px;}
+.input-row{display:flex;gap:8px;align-items:stretch;flex-wrap:wrap;}
+.url-input{flex:1;min-width:200px;background:var(--bg2);border:0.5px solid var(--border2);border-radius:4px;color:var(--text);font-family:var(--mono);font-size:13px;padding:10px 14px;outline:none;transition:border-color 0.15s;}
+.url-input:focus{border-color:var(--green2);}
+.url-input::placeholder{color:var(--text3);}
+.run-btn{background:var(--green3);border:0.5px solid var(--green2);border-radius:4px;color:var(--green);font-family:var(--mono);font-size:12px;font-weight:500;padding:0 20px;cursor:pointer;white-space:nowrap;transition:all 0.15s;display:flex;align-items:center;gap:8px;}
+.run-btn:hover:not(:disabled){background:#163d26;border-color:var(--green);}
+.run-btn:disabled{opacity:0.4;cursor:not-allowed;}
+.run-btn .spinner{width:12px;height:12px;border:1.5px solid var(--green2);border-top-color:var(--green);border-radius:50%;animation:spin 0.7s linear infinite;display:none;}
+.run-btn.running .spinner{display:block;}
+.run-btn.running .btn-label{display:none;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.config-row{display:flex;gap:12px;margin-top:10px;flex-wrap:wrap;}
+.config-item{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text3);}
+.config-item select{background:var(--bg3);border:0.5px solid var(--border);border-radius:3px;color:var(--text2);font-family:var(--mono);font-size:11px;padding:3px 6px;outline:none;}
+.tabs{display:flex;gap:0;border-bottom:0.5px solid var(--border);margin-bottom:20px;}
+.tab{padding:8px 16px;font-size:11px;font-weight:500;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;transition:all 0.15s;text-transform:uppercase;letter-spacing:0.06em;}
+.tab:hover{color:var(--text2);}
+.tab.active{color:var(--green);border-bottom-color:var(--green);}
+.tab-badge{display:inline-flex;align-items:center;justify-content:center;background:var(--green3);color:var(--green);border-radius:3px;font-size:9px;padding:1px 5px;margin-left:6px;min-width:16px;}
+.tab-badge.red{background:var(--red3);color:var(--red);}
+.panel{display:none;}
+.panel.active{display:block;}
+.terminal{background:#080a09;border:0.5px solid var(--border);border-radius:6px;overflow:hidden;}
+.term-bar{background:var(--bg2);border-bottom:0.5px solid var(--border);padding:8px 14px;display:flex;align-items:center;gap:6px;}
+.td{width:10px;height:10px;border-radius:50%;}
+.td-r{background:#e05c5c;}.td-a{background:#f5a623;}.td-g{background:#3ddc84;}
+.term-title{font-size:11px;color:var(--text3);margin-left:6px;}
+.term-body{padding:14px 16px;font-size:12px;line-height:1.85;min-height:220px;max-height:440px;overflow-y:auto;}
+.t-prompt{color:var(--green);}.t-info{color:var(--blue);}.t-warn{color:var(--amber);}.t-err{color:var(--red);}.t-ok{color:var(--green);}.t-dim{color:var(--text3);}.t-teal{color:var(--teal);}.t-text{color:var(--text);}
+.t-line{display:block;white-space:pre-wrap;word-break:break-word;}
+.cursor-blink{display:inline-block;width:7px;height:13px;background:var(--green);animation:blink 1s step-end infinite;vertical-align:text-bottom;margin-left:1px;}
+@keyframes blink{0%,100%{opacity:1;}50%{opacity:0;}}
+.issues-header{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:16px;}
+.stat-card{background:var(--bg2);border:0.5px solid var(--border);border-radius:5px;padding:12px 14px;}
+.stat-val{font-size:24px;font-weight:600;color:#e8edea;line-height:1;margin-bottom:4px;}
+.stat-val.red{color:var(--red);}.stat-val.amber{color:var(--amber);}.stat-val.blue{color:var(--blue);}.stat-val.green{color:var(--green);}
+.stat-lbl{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;}
+.filter-row{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;}
+.filter-btn{padding:4px 12px;border-radius:3px;font-size:10px;font-weight:500;letter-spacing:0.06em;text-transform:uppercase;cursor:pointer;border:0.5px solid var(--border2);background:transparent;color:var(--text3);font-family:var(--mono);transition:all 0.15s;}
+.filter-btn.active{border-color:var(--green2);background:var(--green3);color:var(--green);}
+.filter-btn.f-critical.active{border-color:var(--red2);background:var(--red3);color:var(--red);}
+.filter-btn.f-serious.active{border-color:var(--amber2);background:var(--amber3);color:var(--amber);}
+.filter-btn.f-moderate.active{border-color:var(--blue2);background:var(--blue3);color:var(--blue);}
+.issue-list{display:flex;flex-direction:column;gap:8px;}
+.issue-card{background:var(--bg2);border:0.5px solid var(--border);border-left-width:2px;border-radius:0 5px 5px 0;overflow:hidden;cursor:pointer;transition:border-color 0.12s;}
+.issue-card:hover{border-color:var(--border2);}
+.issue-card.critical{border-left-color:var(--red);}
+.issue-card.serious{border-left-color:var(--amber);}
+.issue-card.moderate{border-left-color:var(--blue);}
+.issue-card.minor{border-left-color:var(--text3);}
+.issue-header{display:flex;align-items:center;gap:10px;padding:11px 14px;}
+.issue-criterion{font-size:10px;font-weight:600;color:var(--text3);min-width:38px;}
+.issue-title{font-size:12px;font-weight:500;color:#e0e5e2;flex:1;}
+.issue-impact{font-size:10px;padding:2px 8px;border-radius:3px;font-weight:500;letter-spacing:0.05em;text-transform:uppercase;white-space:nowrap;}
+.impact-critical{background:var(--red3);color:var(--red);border:0.5px solid var(--red2);}
+.impact-serious{background:var(--amber3);color:var(--amber);border:0.5px solid var(--amber2);}
+.impact-moderate{background:var(--blue3);color:var(--blue);border:0.5px solid var(--blue2);}
+.impact-minor{background:var(--bg3);color:var(--text3);border:0.5px solid var(--border);}
+.issue-body{padding:0 14px 12px;border-top:0.5px solid var(--border);display:none;}
+.issue-body.open{display:block;padding-top:12px;}
+.issue-desc{font-family:var(--sans);font-size:12px;color:var(--text2);line-height:1.65;margin-bottom:10px;}
+.issue-fix-label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;}
+.issue-fix{background:var(--bg3);border:0.5px solid var(--green2);border-radius:4px;padding:8px 12px;font-size:11px;line-height:1.7;color:var(--green);}
+.issue-sel{font-size:10px;color:var(--text3);margin-top:8px;}
+.issue-sel code{background:var(--bg3);padding:1px 5px;border-radius:2px;color:var(--text2);}
+.summary-section{margin-bottom:24px;}
+.summary-title{font-size:12px;font-weight:500;color:#e8edea;margin-bottom:10px;padding-bottom:8px;border-bottom:0.5px solid var(--border);}
+.wcag-bar-row{display:flex;align-items:center;gap:10px;margin:6px 0;}
+.wcag-bar-label{font-size:11px;color:var(--text2);min-width:110px;}
+.wcag-bar-track{flex:1;background:var(--bg3);border-radius:3px;height:5px;overflow:hidden;}
+.wcag-bar-fill{height:100%;border-radius:3px;transition:width 0.6s ease;}
+.wcag-bar-count{font-size:11px;color:var(--text3);min-width:20px;text-align:right;}
+.empty-state{text-align:center;padding:48px 24px;color:var(--text3);}
+.empty-icon{font-size:32px;margin-bottom:12px;opacity:0.4;}
+.empty-msg{font-size:12px;font-family:var(--sans);}
+.error-banner{background:var(--red3);border:0.5px solid var(--red2);border-radius:5px;padding:12px 16px;color:var(--red);font-size:12px;margin-bottom:16px;display:none;font-family:var(--sans);}
+footer{margin-top:48px;padding-top:20px;border-top:0.5px solid var(--border);font-size:11px;color:var(--text3);display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;}
+footer a{color:var(--teal);text-decoration:none;}
+footer a:hover{text-decoration:underline;}
+@media(max-width:600px){
+  .issues-header{grid-template-columns:repeat(2,1fr);}
+  .logo-sub{display:none;}
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <a href="https://tanmaysingh.au" class="back-link">← tanmaysingh.au</a>
+  <div class="header">
+    <div>
+      <div class="logo">Access<span>Watch</span></div>
+      <div class="logo-sub">AI-powered WCAG auditor · live agent demo</div>
+    </div>
+    <div class="status-pill">
+      <div class="status-dot pulse"></div>
+      Live
+    </div>
+  </div>
+  <p class="intro">AccessWatch is an AI agent that crawls a web page and audits it for WCAG 2.1 accessibility violations in real time, using Claude as the analysis engine behind an MCP-style tool architecture. Enter any public URL below and the agent will return real, structured findings — no pre-baked demo data.</p>
+  <div class="error-banner" id="error-banner"></div>
+  <div class="input-section">
+    <div class="input-label">Target URL</div>
+    <div class="input-row">
+      <input class="url-input" id="url-input" type="text" placeholder="https://example.com" value="https://tanmaysingh.au" spellcheck="false"/>
+      <button class="run-btn" id="run-btn" onclick="runAudit()">
+        <div class="spinner"></div>
+        <span class="btn-label">▶ Run audit</span>
+      </button>
+    </div>
+    <div class="config-row">
+      <div class="config-item">
+        Standard:
+        <select id="wcag-level"><option value="AA">WCAG 2.1 AA</option><option value="AAA">WCAG 2.1 AAA</option><option value="A">WCAG 2.1 A</option></select>
+      </div>
+    </div>
+  </div>
+  <div class="preview-card" id="preview-card">
+    <div class="preview-thumb" id="preview-thumb">
+      <div class="thumb-loading" id="thumb-loading"><div class="thumb-spinner"></div>capturing</div>
+      <img id="preview-img" alt="" style="display:none;">
+    </div>
+    <div class="preview-info">
+      <div class="preview-url" id="preview-url"></div>
+      <div class="preview-meta" id="preview-meta">Waiting for audit...</div>
+      <span class="preview-score-badge" id="preview-score-badge" style="display:none;"></span>
+    </div>
+  </div>
+  <div class="marker-note" id="marker-note">Markers show the agent's estimated location for each violation — click one to jump to its details. Positions are approximate.</div>
+
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('trace')" id="tab-trace">Agent trace</div>
+    <div class="tab" onclick="switchTab('issues')" id="tab-issues">Violations <span class="tab-badge red" id="badge-issues">0</span></div>
+    <div class="tab" onclick="switchTab('summary')" id="tab-summary">Summary <span class="tab-badge" id="badge-summary"></span></div>
+  </div>
+  <div class="panel active" id="panel-trace">
+    <div class="terminal">
+      <div class="term-bar">
+        <span class="td td-r"></span><span class="td td-a"></span><span class="td td-g"></span>
+        <span class="term-title" id="term-title">accesswatch — idle</span>
+      </div>
+      <div class="term-body" id="term-body">
+        <span class="t-line t-dim">───────────────────────────────────────────</span>
+        <span class="t-line t-dim">  AccessWatch v1.0  ·  Live AI Accessibility Agent</span>
+        <span class="t-line t-dim">───────────────────────────────────────────</span>
+        <span class="t-line"> </span>
+        <span class="t-line t-text">Enter a URL and run the audit.</span>
+        <span class="t-line t-dim">Model: claude-sonnet-4-6</span>
+        <span class="t-line"> </span>
+        <span class="t-line t-prompt">$ <span class="cursor-blink"></span></span>
+      </div>
+    </div>
+  </div>
+  <div class="panel" id="panel-issues">
+    <div class="issues-header">
+      <div class="stat-card"><div class="stat-val red" id="stat-critical">0</div><div class="stat-lbl">Critical</div></div>
+      <div class="stat-card"><div class="stat-val amber" id="stat-serious">0</div><div class="stat-lbl">Serious</div></div>
+      <div class="stat-card"><div class="stat-val blue" id="stat-moderate">0</div><div class="stat-lbl">Moderate</div></div>
+      <div class="stat-card"><div class="stat-val green" id="stat-total">0</div><div class="stat-lbl">Total</div></div>
+    </div>
+    <div class="filter-row">
+      <button class="filter-btn active" onclick="filterIssues('all',this)">All</button>
+      <button class="filter-btn f-critical" onclick="filterIssues('critical',this)">Critical</button>
+      <button class="filter-btn f-serious" onclick="filterIssues('serious',this)">Serious</button>
+      <button class="filter-btn f-moderate" onclick="filterIssues('moderate',this)">Moderate</button>
+      <button class="filter-btn f-minor" onclick="filterIssues('minor',this)">Minor</button>
+    </div>
+    <div class="issue-list" id="issue-list">
+      <div class="empty-state"><div class="empty-icon">○</div><div class="empty-msg">Run an audit to see violations</div></div>
+    </div>
+  </div>
+  <div class="panel" id="panel-summary">
+    <div id="summary-content">
+      <div class="empty-state"><div class="empty-icon">○</div><div class="empty-msg">Run an audit to generate a summary</div></div>
+    </div>
+  </div>
+  <footer>
+    <span>Built by Tanmay Singh · AI agent + MCP architecture case study</span>
+    <a href="https://tanmaysingh.au">tanmaysingh.au</a>
+  </footer>
+</div>
+<script>
+let allIssues = [];
+let currentFilter = 'all';
+let currentScreenshotUrl = '';
+let screenshotLoaded = false;
+let lastAuditedUrl = '';
+const BACKEND_URL = '/api/audit';
+
+function switchTab(tab) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('tab-' + tab).classList.add('active');
+  document.getElementById('panel-' + tab).classList.add('active');
+}
+function filterIssues(level, btn) {
+  currentFilter = level;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderIssues();
+}
+function renderIssues() {
+  const list = document.getElementById('issue-list');
+  const filtered = currentFilter === 'all' ? allIssues : allIssues.filter(i => i.impact === currentFilter);
+  if (!filtered.length) {
+    list.innerHTML = '<div class="empty-state"><div class="empty-msg">No ' + currentFilter + ' violations found</div></div>';
+    return;
+  }
+  list.innerHTML = filtered.map((issue) => {
+    const idx = allIssues.indexOf(issue);
+    const y = typeof issue.yPosition === 'number' ? issue.yPosition : (idx / allIssues.length) * 90 + 5;
+    const x = 12 + (idx % 4) * 24 + (Math.floor(idx / 4) % 2) * 8;
+    const cropY = Math.min(95, Math.max(5, y));
+    const cropX = Math.min(92, Math.max(8, x));
+    const cropHtml = screenshotLoaded ? `
+      <div class="issue-crop">
+        <img class="issue-crop-img" src="${currentScreenshotUrl}" style="left:${50 - cropX*5}%;top:${50 - cropY*5}%;" alt="">
+        <div class="issue-crop-dot" style="background:var(--${issue.impact==='critical'?'red':issue.impact==='serious'?'amber':issue.impact==='moderate'?'blue':'text3'})"></div>
+      </div>
+    ` : `<div class="issue-crop"></div>`;
+    return `
+    <div class="issue-card ${issue.impact}" id="issue-card-${idx}" onclick="toggleIssue(${idx})">
+      <div class="issue-header">
+        ${cropHtml}
+        <span class="issue-criterion">${issue.criterion}</span>
+        <span class="issue-title">${idx+1}. ${issue.title}</span>
+        <span class="issue-impact impact-${issue.impact}">${issue.impact}</span>
+      </div>
+      <div class="issue-body" id="ib-${idx}">
+        <div class="issue-desc">${issue.description}</div>
+        <div class="issue-fix-label">Suggested fix</div>
+        <div class="issue-fix">${issue.fix}</div>
+        ${issue.selector ? `<div class="issue-sel">Selector: <code>${issue.selector}</code></div>` : ''}
+      </div>
+    </div>
+  `;
+  }).join('');
+}
+function toggleIssue(idx) {
+  document.getElementById('ib-' + idx).classList.toggle('open');
+}
+function jumpToIssue(idx) {
+  switchTab('issues');
+  currentFilter = 'all';
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector('.filter-btn').classList.add('active');
+  renderIssues();
+  setTimeout(() => {
+    const card = document.getElementById('issue-card-' + idx);
+    if (!card) return;
+    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    document.getElementById('ib-' + idx).classList.add('open');
+    card.classList.add('flash');
+    setTimeout(() => card.classList.remove('flash'), 1200);
+  }, 50);
+}
+function log(html) {
+  const body = document.getElementById('term-body');
+  const cursor = body.querySelector('.cursor-blink');
+  if (cursor) cursor.parentElement.remove();
+  const line = document.createElement('span');
+  line.className = 't-line';
+  line.innerHTML = html;
+  body.appendChild(line);
+  body.scrollTop = body.scrollHeight;
+}
+function logCursor() {
+  const body = document.getElementById('term-body');
+  const line = document.createElement('span');
+  line.className = 't-line t-prompt';
+  line.innerHTML = '$ <span class="cursor-blink"></span>';
+  body.appendChild(line);
+  body.scrollTop = body.scrollHeight;
+}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function hideError() { document.getElementById('error-banner').style.display = 'none'; }
+function showError(msg) {
+  const b = document.getElementById('error-banner');
+  b.textContent = msg;
+  b.style.display = 'block';
+}
+async function runAudit() {
+  const url = document.getElementById('url-input').value.trim();
+  if (!url.startsWith('http')) { showError('Please enter a valid URL starting with http:// or https://'); return; }
+  const btn = document.getElementById('run-btn');
+  btn.classList.add('running'); btn.disabled = true;
+  allIssues = [];
+  hideError();
+  switchTab('trace');
+  document.getElementById('term-title').textContent = 'accesswatch — running';
+  document.getElementById('term-body').innerHTML = '';
+  ['badge-issues','stat-critical','stat-serious','stat-moderate','stat-total'].forEach(id => document.getElementById(id).textContent = '0');
+  document.getElementById('badge-summary').textContent = '';
+  const level = document.getElementById('wcag-level').value;
+  showPreviewLoading(url);
+  loadScreenshot(url);
+  log(`<span class="t-prompt">$</span> <span class="t-text">accesswatch run --target ${url} --standard WCAG${level}</span>`);
+  log(`<span class="t-dim">───────────────────────────────────────────</span>`);
+  await sleep(250);
+  log(`<span class="t-info">[planner]</span> <span class="t-text">Target: ${url}</span>`);
+  await sleep(250);
+  log(`<span class="t-info">[planner]</span> <span class="t-text">Standard: WCAG 2.1 ${level}</span>`);
+  await sleep(400);
+  log(`<span class="t-teal">[crawler]</span> <span class="t-text">browser-mcp.navigate("${url}")</span>`);
+  await sleep(400);
+  log(`<span class="t-warn">[audit]</span>  <span class="t-text">POST ${BACKEND_URL}</span>`);
+  log(`<span class="t-warn">[audit]</span>  <span class="t-text">Calling claude-sonnet-4-6... <span class="cursor-blink"></span></span>`);
+  try {
+    const issues = await callBackend(url, level);
+    const cursor = document.getElementById('term-body').querySelector('.cursor-blink');
+    if (cursor) cursor.parentElement.remove();
+    log(`<span class="t-ok">[audit]</span>  <span class="t-text">Live AI analysis complete</span>`);
+    log(`<span class="t-dim">───────────────────────────────────────────</span>`);
+    const critical = issues.filter(i=>i.impact==='critical').length;
+    const serious = issues.filter(i=>i.impact==='serious').length;
+    const moderate = issues.filter(i=>i.impact==='moderate').length;
+    const minor = issues.filter(i=>i.impact==='minor').length;
+    for (const issue of issues) {
+      await sleep(100);
+      const cls = issue.impact==='critical'?'t-err':issue.impact==='serious'?'t-warn':'t-info';
+      log(`<span class="${cls}">[audit]</span>  <span class="t-text">${issue.impact.toUpperCase().padEnd(10)} ${issue.criterion}  ${issue.title}</span>`);
+    }
+    await sleep(300);
+    log(`<span class="t-dim">───────────────────────────────────────────</span>`);
+    log(`<span class="t-ok">[done]</span>    <span class="t-text">${issues.length} violations · ${critical} critical · ${serious} serious · ${moderate} moderate · ${minor} minor</span>`);
+    document.getElementById('term-title').textContent = `accesswatch — ${issues.length} violations found`;
+    allIssues = issues;
+    lastAuditedUrl = url;
+    document.getElementById('stat-critical').textContent = critical;
+    document.getElementById('stat-serious').textContent = serious;
+    document.getElementById('stat-moderate').textContent = moderate;
+    document.getElementById('stat-total').textContent = issues.length;
+    document.getElementById('badge-issues').textContent = issues.length;
+    document.getElementById('badge-summary').textContent = '✓';
+    renderIssues();
+    renderSummary(url, issues, level);
+  } catch(e) {
+    const cursor = document.getElementById('term-body').querySelector('.cursor-blink');
+    if (cursor) cursor.parentElement.remove();
+    log(`<span class="t-err">[error]</span>  <span class="t-text">${e.message}</span>`);
+    document.getElementById('term-title').textContent = 'accesswatch — error';
+    showError(e.message);
+  }
+  logCursor();
+  btn.classList.remove('running'); btn.disabled = false;
+}
+async function callBackend(url, level) {
+  const res = await fetch(BACKEND_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url, level })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error?.message || `Backend returned HTTP ${res.status}`);
+  }
+  if (!data.issues) {
+    throw new Error('Backend response missing issues array');
+  }
+  return data.issues;
+}
+function showPreviewLoading(url) {
+  const card = document.getElementById('preview-card');
+  card.classList.add('show');
+  document.getElementById('preview-url').textContent = url.replace(/^https?:\/\//, '');
+  document.getElementById('preview-meta').textContent = 'Capturing page and running audit...';
+  document.getElementById('preview-score-badge').style.display = 'none';
+  document.getElementById('thumb-loading').style.display = 'flex';
+  document.getElementById('preview-img').style.display = 'none';
+  document.getElementById('marker-note').classList.remove('show');
+  document.getElementById('preview-thumb').querySelectorAll('.marker').forEach(m => m.remove());
+}
+
+function loadScreenshot(url) {
+  const img = document.getElementById('preview-img');
+  const loading = document.getElementById('thumb-loading');
+  const shotUrl = `https://api.microlink.io/?url=${encodeURIComponent(url)}&screenshot=true&meta=false&embed=screenshot.url`;
+  currentScreenshotUrl = shotUrl;
+  screenshotLoaded = false;
+  const tmp = new Image();
+  tmp.onload = () => {
+    img.src = shotUrl;
+    img.style.display = 'block';
+    loading.style.display = 'none';
+    screenshotLoaded = true;
+    renderIssues();
+  };
+  tmp.onerror = () => {
+    loading.innerHTML = '<span style="font-size:10px">preview unavailable</span>';
+    screenshotLoaded = false;
+  };
+  tmp.src = shotUrl;
+}
+
+function updatePreviewResult(url, score, scoreColor, issueCount) {
+  document.getElementById('preview-meta').textContent = `${issueCount} violations found`;
+  const badge = document.getElementById('preview-score-badge');
+  badge.style.display = 'inline-flex';
+  badge.style.background = `var(--${scoreColor}3)`;
+  badge.style.color = `var(--${scoreColor})`;
+  badge.style.border = `0.5px solid var(--${scoreColor}2)`;
+  badge.textContent = `Score: ${score}/100`;
+  renderMarkers();
+}
+
+function renderMarkers() {
+  const thumb = document.getElementById('preview-thumb');
+  thumb.querySelectorAll('.marker').forEach(m => m.remove());
+  if (!allIssues.length) return;
+  document.getElementById('marker-note').classList.add('show');
+  allIssues.forEach((issue, idx) => {
+    const y = typeof issue.yPosition === 'number' ? issue.yPosition : (idx / allIssues.length) * 90 + 5;
+    const x = 12 + (idx % 4) * 24 + (Math.floor(idx / 4) % 2) * 8;
+    const marker = document.createElement('div');
+    marker.className = `marker m-${issue.impact}`;
+    marker.style.top = Math.min(95, Math.max(5, y)) + '%';
+    marker.style.left = Math.min(92, Math.max(8, x)) + '%';
+    marker.textContent = idx + 1;
+    marker.title = issue.title;
+    marker.onclick = (e) => { e.stopPropagation(); jumpToIssue(idx); };
+    thumb.appendChild(marker);
+  });
+}
+
+function buildGauge(score, scoreColor) {
+  const colorMap = { green: '#3ddc84', amber: '#f5a623', red: '#e05c5c' };
+  const c = colorMap[scoreColor];
+  const radius = 54, stroke = 10, cx = 64, cy = 64;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference * (1 - score / 100);
+  return `
+    <svg class="gauge-svg" width="128" height="128" viewBox="0 0 128 128">
+      <circle cx="${cx}" cy="${cy}" r="${radius}" fill="none" stroke="#1e2220" stroke-width="${stroke}"/>
+      <circle cx="${cx}" cy="${cy}" r="${radius}" fill="none" stroke="${c}" stroke-width="${stroke}"
+        stroke-dasharray="${circumference}" stroke-dashoffset="${offset}"
+        stroke-linecap="round" transform="rotate(-90 ${cx} ${cy})"
+        style="transition:stroke-dashoffset 0.8s ease"/>
+      <text x="${cx}" y="${cy - 4}" text-anchor="middle" font-family="IBM Plex Mono" font-size="28" font-weight="600" fill="#e8edea">${score}</text>
+      <text x="${cx}" y="${cy + 16}" text-anchor="middle" font-family="IBM Plex Mono" font-size="10" fill="#7a8078">/ 100</text>
+    </svg>
+  `;
+}
+
+function buildCategoryChart(buckets, bColors) {
+  const maxB = Math.max(...Object.values(buckets), 1);
+  return `
+    <div class="chart-bars">
+      ${Object.entries(buckets).map(([label, count]) => `
+        <div class="chart-bar-col">
+          <span class="chart-bar-val">${count}</span>
+          <div class="chart-bar" style="height:${Math.max(4, Math.round(count/maxB*110))}px;background:${bColors[label]}"></div>
+          <span class="chart-bar-label">${label}</span>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderSummary(url, issues, level) {
+  const critical=issues.filter(i=>i.impact==='critical').length;
+  const serious=issues.filter(i=>i.impact==='serious').length;
+  const moderate=issues.filter(i=>i.impact==='moderate').length;
+  const score=Math.max(0,Math.round(100-(critical*15)-(serious*8)-(moderate*4)));
+  const sc=score>=80?'green':score>=60?'amber':'red';
+  const buckets={'Perceivable':0,'Operable':0,'Understandable':0,'Robust':0};
+  const map={'1':'Perceivable','2':'Operable','3':'Understandable','4':'Robust'};
+  issues.forEach(i=>{ const g=map[(i.criterion||'').split('.')[0]]; if(g) buckets[g]++; });
+  const bColors={'Perceivable':'#e05c5c','Operable':'#f5a623','Understandable':'#5b9cf6','Robust':'#2dd4bf'};
+
+  updatePreviewResult(url, score, sc, issues.length);
+
+  document.getElementById('summary-content').innerHTML = `
+    <div class="summary-section">
+      <div class="summary-title">Audit overview</div>
+      <div class="gauge-wrap">
+        ${buildGauge(score, sc)}
+        <div class="gauge-legend">
+          <div class="gauge-legend-item"><span class="gauge-legend-dot" style="background:var(--red)"></span>${critical} critical</div>
+          <div class="gauge-legend-item"><span class="gauge-legend-dot" style="background:var(--amber)"></span>${serious} serious</div>
+          <div class="gauge-legend-item"><span class="gauge-legend-dot" style="background:var(--blue)"></span>${moderate} moderate</div>
+          <div class="gauge-legend-item">WCAG 2.1 ${level} · ${issues.length} total</div>
+        </div>
+      </div>
+    </div>
+    <div class="summary-section">
+      <div class="summary-title">By WCAG principle</div>
+      ${buildCategoryChart(buckets, bColors)}
+    </div>
+    <div class="summary-section">
+      <div class="summary-title">Priority order</div>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        ${['critical','serious','moderate','minor'].map(lvl=>{
+          const li=issues.filter(i=>i.impact===lvl);
+          if(!li.length) return '';
+          const c={critical:'var(--red)',serious:'var(--amber)',moderate:'var(--blue)',minor:'var(--text3)'};
+          return `<div style="display:flex;align-items:flex-start;gap:10px;padding:8px 12px;background:var(--bg2);border:0.5px solid var(--border);border-radius:4px">
+            <span style="font-size:10px;font-weight:600;color:${c[lvl]};text-transform:uppercase;min-width:64px;padding-top:1px">${lvl}</span>
+            <span style="font-size:11px;color:var(--text2);font-family:var(--sans);line-height:1.6">${li.map(i=>i.title).join(' · ')}</span>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+    <div class="summary-section">
+      <div class="summary-title">File as GitHub issues</div>
+      <p style="font-family:var(--sans);font-size:12px;color:var(--text2);line-height:1.6;margin-bottom:12px;">Creates one issue per violation in a repo of your choice. Your token is sent directly to GitHub via this request and is never stored.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+        <input class="url-input" id="gh-repo" placeholder="owner/repo" style="max-width:220px;" spellcheck="false">
+        <input class="url-input" id="gh-token" type="password" placeholder="GitHub personal access token" style="flex:1;min-width:200px;" spellcheck="false">
+        <button class="run-btn" id="gh-file-btn" onclick="fileGithubIssues()">
+          <div class="spinner" id="gh-spinner"></div>
+          <span id="gh-btn-label">File issues</span>
+        </button>
+      </div>
+      <div id="gh-result"></div>
+    </div>
+    <div style="border-top:0.5px solid var(--border);padding-top:14px;font-size:10px;color:var(--text3);display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px">
+      <span>${url}</span>
+      <span>AccessWatch · WCAG 2.1 ${level} · ${new Date().toLocaleDateString()}</span>
+    </div>
+  `;
+}
+
+async function fileGithubIssues() {
+  const repo = document.getElementById('gh-repo').value.trim();
+  const token = document.getElementById('gh-token').value.trim();
+  const resultBox = document.getElementById('gh-result');
+  const btn = document.getElementById('gh-file-btn');
+  const spinner = document.getElementById('gh-spinner');
+  const label = document.getElementById('gh-btn-label');
+
+  if (!repo || !repo.includes('/')) {
+    resultBox.innerHTML = `<div style="font-size:11px;color:var(--red);font-family:var(--sans);margin-top:8px;">Enter a repo in "owner/repo" format.</div>`;
+    return;
+  }
+  if (!token) {
+    resultBox.innerHTML = `<div style="font-size:11px;color:var(--red);font-family:var(--sans);margin-top:8px;">A GitHub token is required to create issues.</div>`;
+    return;
+  }
+  if (!allIssues.length) {
+    resultBox.innerHTML = `<div style="font-size:11px;color:var(--red);font-family:var(--sans);margin-top:8px;">Run an audit first.</div>`;
+    return;
+  }
+
+  btn.disabled = true;
+  spinner.style.display = 'block';
+  label.style.display = 'none';
+  resultBox.innerHTML = `<div style="font-size:11px;color:var(--text3);font-family:var(--sans);margin-top:8px;">Filing ${allIssues.length} issues to ${repo}...</div>`;
+
+  try {
+    const res = await fetch('/api/file-issues', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo, token, issues: allIssues, sourceUrl: lastAuditedUrl })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      resultBox.innerHTML = `<div style="font-size:11px;color:var(--red);font-family:var(--sans);margin-top:8px;">${data.error?.message || 'Failed to file issues.'}</div>`;
+    } else {
+      const successLines = data.results.filter(r => r.success)
+        .map(r => `<a href="${r.url}" target="_blank" style="color:var(--teal);text-decoration:none;">#${r.number}</a> ${r.title}`)
+        .join('<br>');
+      const failLines = data.results.filter(r => !r.success)
+        .map(r => `<span style="color:var(--red)">failed:</span> ${r.title} — ${r.error}`)
+        .join('<br>');
+      resultBox.innerHTML = `
+        <div style="font-size:11px;color:var(--green);font-family:var(--sans);margin-top:10px;margin-bottom:6px;">${data.filed} of ${data.total} issues filed successfully.</div>
+        <div style="font-size:11px;font-family:var(--sans);line-height:1.8;color:var(--text2);">${successLines}${failLines ? '<br>' + failLines : ''}</div>
+      `;
+    }
+  } catch (e) {
+    resultBox.innerHTML = `<div style="font-size:11px;color:var(--red);font-family:var(--sans);margin-top:8px;">Request failed: ${e.message}</div>`;
+  }
+
+  btn.disabled = false;
+  spinner.style.display = 'none';
+  label.style.display = 'inline';
+}
+</script>
+</body>
+</html>
